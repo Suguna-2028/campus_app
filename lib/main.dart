@@ -125,7 +125,7 @@ const services = <Svc>[
   Svc('Fees', 'Payments', Icons.account_balance_wallet_rounded, Color(0xFF06B6D4), 'No outstanding balance. Next payment due 5 January.'),
   Svc('Hostel', 'Room & requests', Icons.apartment_rounded, Color(0xFF8B5CF6), 'Block C, Room 214. Laundry on level 2. No open maintenance requests.'),
   Svc('Sports', 'Gym & courts', Icons.sports_basketball_rounded, Color(0xFFEF4444), 'Gym, pool, football field and courts. Book a slot from 6:00 AM to 10:00 PM.'),
-  Svc('Helpdesk', 'Get support', Icons.support_agent_rounded, Color(0xFF64748B), 'Email help@avit.edu or visit Admin Block, Level 1 (9:00 AM – 5:00 PM).'),
+  Svc('Helpdesk', 'Get support', Icons.support_agent_rounded, Color(0xFF64748B), 'Email help@avit.edu, visit Admin Block Level 1 (9:00 AM – 5:00 PM), or send a request from the Request tab.'),
 ];
 
 const notices = <List<String>>[
@@ -667,7 +667,7 @@ class _ShellState extends State<Shell> {
   static const items = [
     [Icons.home_rounded, 'Home'],
     [Icons.calendar_month_rounded, 'Schedule'],
-    [Icons.celebration_rounded, 'Events'],
+    [Icons.edit_note_rounded, 'Request'],
     [Icons.grid_view_rounded, 'Services'],
     [Icons.person_rounded, 'Profile'],
   ];
@@ -683,12 +683,12 @@ class _ShellState extends State<Shell> {
         IndexedStack(index: i, children: [
           HomePage(go: (n) => setState(() => i = n)),
           const SchedulePage(),
-          const EventsPage(),
+          const RequestPage(),
           const ServicesPage(),
           const ProfilePage(),
         ]),
       ]),
-      bottomNavigationBar: SafeArea(
+      bottomNavigationBar: MediaQuery.of(context).viewInsets.bottom > 0 ? null : SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
           child: Glass(
@@ -875,7 +875,7 @@ class HomePage extends StatelessWidget {
             child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
               for (final a in [
                 [Icons.calendar_month_rounded, 'Timetable', const Color(0xFF4F46E5), 1],
-                [Icons.celebration_rounded, 'Events', const Color(0xFFEC4899), 2],
+                [Icons.edit_note_rounded, 'Request', const Color(0xFFEC4899), 2],
                 [Icons.local_library_rounded, 'Library', const Color(0xFF10B981), 0],
                 [Icons.assignment_rounded, 'Results', const Color(0xFFF59E0B), 3],
               ])
@@ -952,7 +952,7 @@ class HomePage extends StatelessWidget {
             for (int k = 0; k < today.length; k++) ClassCard(today[k], k),
 
           // ── Events ──
-          SectionTitle('Upcoming events', action: 'View all', onTap: () => go(2)),
+          SectionTitle('Upcoming events', action: 'View all', onTap: () => openEvents(context)),
         ]),
       ),
       SizedBox(
@@ -964,7 +964,7 @@ class HomePage extends StatelessWidget {
           itemCount: events.length,
           separatorBuilder: (_, __) => const SizedBox(width: 14),
           itemBuilder: (_, i) => Tap(
-            onTap: () => go(2),
+            onTap: () => openEvents(context),
             child: SizedBox(
               width: 262,
               child: EventPhoto(
@@ -1442,5 +1442,715 @@ class ProfilePage extends StatelessWidget {
         ]),
       ),
     ]);
+  }
+}
+
+// ═════════════════════════ EVENTS (opened as its own screen) ═════════════════════════
+void openEvents(BuildContext context) =>
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EventsScreen()));
+
+class EventsScreen extends StatelessWidget {
+  const EventsScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final p = Pal.of(context);
+    return Scaffold(
+      backgroundColor: p.bg,
+      body: Stack(fit: StackFit.expand, children: [
+        const Positioned.fill(child: Aurora()),
+        const EventsPage(),
+        SafeArea(
+          child: Align(
+            alignment: Alignment.topRight,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Tap(
+                onTap: () => Navigator.of(context).pop(),
+                child: const Glass(
+                  radius: 22,
+                  width: 44,
+                  height: 44,
+                  opacity: .22,
+                  child: Icon(Icons.close_rounded, color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ═════════════════════════ SERVICE REQUEST FORM ═════════════════════════
+// Colour system: primary kPri, accent kPri2, field fill = Pal.soft, error / success below.
+const kError = Color(0xFFE11D48);
+const kSuccess = Color(0xFF16A34A);
+const kDomain = '@avit.edu'; // campus email domain
+const kAuto = AutovalidateMode.onUserInteraction; // errors appear once the user interacts
+
+const kCategories = <String>[
+  'Library Services',
+  'Hostel & Accommodation',
+  'IT & Wi-Fi Support',
+  'Fees & Scholarship',
+  'Transport',
+  'Exams & Results',
+  'Counselling & Wellbeing',
+];
+const kUrgency = <String>['Low', 'Normal', 'High', 'Urgent'];
+const kContact = <String>['Email', 'Phone call', 'WhatsApp', 'In person'];
+
+// ADVANCED #1: extra field that only appears for some categories -> [label, hint]
+const kExtra = <String, List<String>>{
+  'Library Services': ['Book title or ID', 'e.g. Operating Systems, 3rd edition'],
+  'Hostel & Accommodation': ['Block and room number', 'e.g. Block C, Room 214'],
+  'IT & Wi-Fi Support': ['Device or location', 'e.g. Lab 2, PC 14'],
+  'Transport': ['Route or bus stop', 'e.g. Gate A shuttle'],
+};
+
+const kMonthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+String fmtDate(DateTime d) => '${d.day} ${kMonthsShort[d.month - 1]} ${d.year}';
+
+/// One consistent input style for every field (borders, focus colour, error style, icons).
+InputDecoration campusDecoration(Pal p, {required String label, String? hint, IconData? icon}) {
+  OutlineInputBorder border(Color c, [double w = 1.2]) => OutlineInputBorder(
+      borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: c, width: w));
+  return InputDecoration(
+    labelText: label,
+    hintText: hint,
+    prefixIcon: icon == null ? null : Icon(icon, color: kPri),
+    filled: true,
+    fillColor: p.soft,
+    labelStyle: TextStyle(color: p.sub, fontSize: 15),
+    hintStyle: TextStyle(color: p.sub.withOpacity(.7)),
+    errorMaxLines: 2,
+    errorStyle: const TextStyle(color: kError, fontWeight: FontWeight.w600, fontSize: 12.5),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+    border: border(p.line),
+    enabledBorder: border(p.line),
+    focusedBorder: border(kPri, 2),
+    errorBorder: border(kError),
+    focusedErrorBorder: border(kError, 2),
+  );
+}
+
+/// ADVANCED #3: reusable text field. Every text input in the form is built from this widget.
+class CampusTextField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  final IconData icon;
+  final String? Function(String?) validator;
+  final FormFieldSetter<String>? onSaved;
+  final TextInputType keyboard;
+  final TextInputAction action;
+  final TextCapitalization caps;
+  final int maxLines;
+  final int? maxLength; // ADVANCED #2: shows a live character counter (e.g. 120/300)
+  final List<TextInputFormatter>? formatters;
+
+  const CampusTextField({
+    super.key,
+    required this.controller,
+    required this.label,
+    required this.icon,
+    required this.validator,
+    this.onSaved,
+    this.hint,
+    this.keyboard = TextInputType.text,
+    this.action = TextInputAction.next,
+    this.caps = TextCapitalization.none,
+    this.maxLines = 1,
+    this.maxLength,
+    this.formatters,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = Pal.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: TextFormField(
+        controller: controller,
+        autovalidateMode: kAuto,
+        validator: validator,
+        onSaved: onSaved,
+        keyboardType: keyboard,
+        textInputAction: action,
+        textCapitalization: caps,
+        minLines: maxLines > 1 ? 4 : 1,
+        maxLines: maxLines,
+        maxLength: maxLength,
+        inputFormatters: formatters,
+        style: TextStyle(fontSize: 15.5, color: p.text),
+        decoration: campusDecoration(p, label: label, hint: hint, icon: icon),
+      ),
+    );
+  }
+}
+
+/// Single-choice chips that behave like a real form field (validator, onSaved, reset).
+class ChoiceField extends FormField<String> {
+  ChoiceField({
+    super.key,
+    required String label,
+    required IconData icon,
+    required List<String> options,
+    super.onSaved,
+    super.validator,
+  }) : super(
+    autovalidateMode: kAuto,
+    builder: (state) {
+      final p = Pal.of(state.context);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: InputDecorator(
+          isEmpty: false,
+          decoration: campusDecoration(p, label: label, icon: icon)
+              .copyWith(errorText: state.errorText, contentPadding: const EdgeInsets.fromLTRB(12, 20, 12, 12)),
+          child: Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final o in options)
+              ChoiceChip(
+                label: Text(o),
+                selected: state.value == o,
+                showCheckmark: false,
+                selectedColor: kPri,
+                labelStyle: TextStyle(
+                    fontWeight: FontWeight.w700, color: state.value == o ? Colors.white : p.text),
+                onSelected: (_) => state.didChange(o),
+              ),
+          ]),
+        ),
+      );
+    },
+  );
+}
+
+/// Date picker as a form field; the date can never be earlier than today.
+class DateField extends FormField<DateTime> {
+  DateField({super.key, required String label, super.onSaved})
+      : super(
+    autovalidateMode: kAuto,
+    validator: (d) {
+      if (d == null) return 'Choose a preferred response date';
+      final now = DateTime.now();
+      if (d.isBefore(DateTime(now.year, now.month, now.day))) return 'The date cannot be in the past';
+      return null;
+    },
+    builder: (state) {
+      final p = Pal.of(state.context);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () async {
+            final now = DateTime.now();
+            final today = DateTime(now.year, now.month, now.day);
+            final d = await showDatePicker(
+              context: state.context,
+              initialDate: state.value ?? today,
+              firstDate: today, // past dates are not selectable
+              lastDate: today.add(const Duration(days: 90)),
+              helpText: 'Preferred response date',
+            );
+            if (d != null) state.didChange(d);
+          },
+          child: InputDecorator(
+            isEmpty: state.value == null,
+            decoration: campusDecoration(p, label: label, icon: Icons.event_rounded).copyWith(
+              errorText: state.errorText,
+              suffixIcon: Icon(Icons.arrow_drop_down_rounded, color: p.sub),
+            ),
+            child: Text(state.value == null ? '' : fmtDate(state.value!),
+                style: TextStyle(fontSize: 15.5, color: p.text)),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+/// Declaration checkbox: validation fails until it is ticked.
+class DeclarationField extends FormField<bool> {
+  DeclarationField({super.key, required String text, super.onSaved})
+      : super(
+    initialValue: false,
+    autovalidateMode: kAuto,
+    validator: (v) => v == true ? null : 'You must accept the declaration before submitting',
+    builder: (state) {
+      final p = Pal.of(state.context);
+      final on = state.value ?? false;
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => state.didChange(!on),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Checkbox(
+              value: on,
+              activeColor: kPri,
+              side: BorderSide(color: state.hasError ? kError : p.sub, width: 2),
+              onChanged: (v) => state.didChange(v ?? false),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 12, bottom: 8),
+                child: Text(text, style: TextStyle(fontSize: 14, height: 1.4, color: p.text)),
+              ),
+            ),
+          ]),
+        ),
+        if (state.hasError)
+          Padding(
+            padding: const EdgeInsets.only(left: 14, bottom: 8),
+            child: Text(state.errorText!,
+                style: const TextStyle(color: kError, fontWeight: FontWeight.w600, fontSize: 12.5)),
+          ),
+      ]);
+    },
+  );
+}
+
+/// Values collected by save() and shown in the success summary.
+class ServiceRequest {
+  String name = '', studentId = '', email = '', phone = '';
+  String category = '', extraLabel = '', extra = '', subject = '', details = '';
+  String urgency = '', contact = '';
+  DateTime? date;
+}
+
+class RequestPage extends StatefulWidget {
+  const RequestPage({super.key});
+  @override
+  State<RequestPage> createState() => _RequestPageState();
+}
+
+class _RequestPageState extends State<RequestPage> {
+  // The form key gives access to validate(), save() and reset() through currentState.
+  final _formKey = GlobalKey<FormState>();
+  final _scroll = ScrollController();
+  final _name = TextEditingController();
+  final _id = TextEditingController();
+  final _email = TextEditingController();
+  final _phone = TextEditingController();
+  final _subject = TextEditingController();
+  final _details = TextEditingController();
+  final _extra = TextEditingController();
+
+  String? _category; // non-Form state: must be cleared on reset too
+  ServiceRequest _req = ServiceRequest();
+
+  // Controllers must be disposed when the State is removed.
+  @override
+  void dispose() {
+    for (final c in [_name, _id, _email, _phone, _subject, _details, _extra]) {
+      c.dispose();
+    }
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  // ── Validators: each message says what is wrong and what is expected ──
+  String? _vName(String? v) {
+    final t = (v ?? '').trim();
+    if (t.isEmpty) return 'Please enter your full name';
+    if (t.length < 3) return 'Name is too short (at least 3 characters)';
+    if (!RegExp(r"^[A-Za-z][A-Za-z .'-]*$").hasMatch(t)) return 'Use letters only, e.g. Suguna K';
+    return null;
+  }
+
+  String? _vId(String? v) {
+    final t = (v ?? '').trim().toUpperCase();
+    if (t.isEmpty) return 'Student ID is required';
+    if (!RegExp(r'^AVIT\d{4}-\d{4}$').hasMatch(t)) return 'Use the format AVIT2024-1082';
+    return null;
+  }
+
+  String? _vEmail(String? v) {
+    final t = (v ?? '').trim().toLowerCase();
+    if (t.isEmpty) return 'Campus email is required';
+    if (!RegExp(r'^[\w.+-]+@[\w-]+(\.[\w-]+)+$').hasMatch(t)) return 'Enter a valid email, e.g. suguna$kDomain';
+    if (!t.endsWith(kDomain)) return 'Use your campus email ending in $kDomain';
+    return null;
+  }
+
+  String? _vPhone(String? v) {
+    final t = (v ?? '').replaceAll(RegExp(r'[\s-]'), '');
+    if (t.isEmpty) return null; // optional field
+    if (!RegExp(r'^\+?\d{10,13}$').hasMatch(t)) return 'Enter 10–13 digits, with an optional leading +';
+    return null;
+  }
+
+  String? _vSubject(String? v) {
+    final t = (v ?? '').trim();
+    if (t.isEmpty) return 'Please add a short subject';
+    if (t.length < 5) return 'Subject is too short (at least 5 characters)';
+    return null;
+  }
+
+  String? _vDetails(String? v) {
+    final t = (v ?? '').trim();
+    if (t.isEmpty) return 'Please describe your request';
+    if (t.length < 20) return 'Add more detail (${t.length}/20 characters minimum)';
+    return null;
+  }
+
+  // ── Submit: validate first, save only when every rule passes ──
+  void _submit() {
+    FocusScope.of(context).unfocus();
+    final form = _formKey.currentState!;
+    if (!form.validate()) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: kError,
+        content: Text('Please fix the highlighted fields before submitting.'),
+      ));
+      return; // stay on the form, keep valid data
+    }
+    _req = ServiceRequest();
+    form.save(); // runs every onSaved callback
+    _showSuccess();
+  }
+
+  // ── Reset: clear the Form, the controllers AND the non-Form state ──
+  void _reset({bool silent = false}) {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      for (final c in [_name, _id, _email, _phone, _subject, _details, _extra]) {
+        c.clear();
+      }
+      _category = null;
+      _req = ServiceRequest();
+    });
+    // Reset after the rebuild so dropdown/chips/date/checkbox return to their initial values.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _formKey.currentState?.reset());
+    if (_scroll.hasClients) {
+      _scroll.animateTo(0, duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
+    }
+    if (!silent) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text('Form cleared. You can start a new request.'),
+      ));
+    }
+  }
+
+  void _showSuccess() {
+    final r = _req;
+    final ref = 'AVIT-SR-${1000 + math.Random().nextInt(9000)}';
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final p = Pal.of(ctx);
+        Widget row(String l, String v) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SizedBox(width: 82, child: Text(l, style: TextStyle(color: p.sub, fontSize: 13))),
+            Expanded(child: Text(v, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5))),
+          ]),
+        );
+        return AlertDialog(
+          backgroundColor: p.card,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+          icon: const Icon(Icons.check_circle_rounded, color: kSuccess, size: 60),
+          title: const Text('Request received!', textAlign: TextAlign.center),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Pill(ref, kSuccess, icon: Icons.confirmation_number_outlined),
+              const SizedBox(height: 12),
+              Text(
+                'Thank you, ${r.name.split(' ').first}. The ${r.category} team will contact you by '
+                    '${r.contact.toLowerCase()} on or before ${fmtDate(r.date!)}.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: p.sub, height: 1.45),
+              ),
+              const SizedBox(height: 16),
+              Divider(color: p.line),
+              const SizedBox(height: 8),
+              row('Student', '${r.name} (${r.studentId})'),
+              row('Category', r.category),
+              if (r.extra.isNotEmpty) row(r.extraLabel, r.extra),
+              row('Subject', r.subject),
+              row('Urgency', r.urgency),
+              row('Contact', r.contact),
+              row('Date', fmtDate(r.date!)),
+            ]),
+          ),
+          actionsAlignment: MainAxisAlignment.center,
+          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          actions: [
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: kPri,
+                minimumSize: const Size(180, 50),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _reset(silent: true); // start fresh after a successful submission
+              },
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('New request', style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _section(Pal p, String title, IconData icon, List<Widget> kids) => Padding(
+    padding: const EdgeInsets.only(bottom: 16),
+    child: GlassCard(
+      radius: 22,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(color: kPri.withOpacity(.14), borderRadius: BorderRadius.circular(12)),
+            child: Icon(icon, color: kPri, size: 20),
+          ),
+          const SizedBox(width: 10),
+          Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 16),
+        ...kids,
+      ]),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final p = Pal.of(context);
+    final extra = kExtra[_category];
+    return Form(
+      key: _formKey,
+      autovalidateMode: kAuto,
+      child: ListView(
+        controller: _scroll, // scrollable body: no overflow on small screens or with the keyboard open
+        padding: EdgeInsets.zero,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        children: [
+          // ── App header: name, form title, icon and short instruction ──
+          PhotoBackdrop(
+            url: kImgLibrary,
+            seed: 31,
+            radius: 32,
+            child: SizedBox(
+              width: double.infinity,
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Glass(
+                        radius: 16,
+                        width: 48,
+                        height: 48,
+                        opacity: .2,
+                        child: const Icon(Icons.support_agent_rounded, color: Colors.white, size: 26),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text('AVIT Help Desk',
+                            style: TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.w600)),
+                      ),
+                    ]),
+                    const SizedBox(height: 14),
+                    const Text('Student Service Request',
+                        style: TextStyle(
+                            color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -.5)),
+                    const SizedBox(height: 4),
+                    const Text('Tell us what you need and the right team will reply within 2 working days.',
+                        style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4)),
+                    const SizedBox(height: 14),
+                    const Pill('Fields marked * are required', Colors.white,
+                        icon: Icons.info_outline_rounded, onDark: true),
+                  ]),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 120),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              // ── Section 1: student details ──
+              _section(p, 'Student details', Icons.badge_outlined, [
+                CampusTextField(
+                  controller: _name,
+                  label: 'Full name *',
+                  hint: 'e.g. Suguna K',
+                  icon: Icons.person_outline_rounded,
+                  caps: TextCapitalization.words,
+                  validator: _vName,
+                  onSaved: (v) => _req.name = v!.trim(),
+                ),
+                CampusTextField(
+                  controller: _id,
+                  label: 'Student ID *',
+                  hint: 'AVIT2024-1082',
+                  icon: Icons.numbers_rounded,
+                  caps: TextCapitalization.characters,
+                  formatters: [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9-]'))],
+                  validator: _vId,
+                  onSaved: (v) => _req.studentId = v!.trim().toUpperCase(),
+                ),
+                CampusTextField(
+                  controller: _email,
+                  label: 'Campus email *',
+                  hint: 'name$kDomain',
+                  icon: Icons.alternate_email_rounded,
+                  keyboard: TextInputType.emailAddress,
+                  validator: _vEmail,
+                  onSaved: (v) => _req.email = v!.trim().toLowerCase(),
+                ),
+                CampusTextField(
+                  controller: _phone,
+                  label: 'Phone number (optional)',
+                  hint: '+91 98765 43210',
+                  icon: Icons.phone_outlined,
+                  keyboard: TextInputType.phone,
+                  formatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9+\s-]'))],
+                  validator: _vPhone,
+                  onSaved: (v) => _req.phone = (v ?? '').trim(),
+                ),
+              ]),
+
+              // ── Section 2: request details ──
+              _section(p, 'Request details', Icons.edit_note_rounded, [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: DropdownButtonFormField<String>(
+                    value: _category,
+                    isExpanded: true,
+                    autovalidateMode: kAuto,
+                    dropdownColor: p.card,
+                    borderRadius: BorderRadius.circular(16),
+                    decoration: campusDecoration(p, label: 'Service category *', icon: Icons.category_outlined),
+                    items: [
+                      for (final c in kCategories)
+                        DropdownMenuItem(value: c, child: Text(c, overflow: TextOverflow.ellipsis)),
+                    ],
+                    validator: (v) => v == null ? 'Select a service category' : null,
+                    // Changing the category rebuilds the form to show / hide the extra field.
+                    onChanged: (v) => setState(() {
+                      _category = v;
+                      _extra.clear();
+                    }),
+                    onSaved: (v) => _req.category = v ?? '',
+                  ),
+                ),
+                // ADVANCED #1: conditional field that depends on the chosen category
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeOut,
+                  child: extra == null
+                      ? const SizedBox(width: double.infinity)
+                      : CampusTextField(
+                    key: ValueKey(_category),
+                    controller: _extra,
+                    label: '${extra[0]} *',
+                    hint: extra[1],
+                    icon: Icons.tune_rounded,
+                    validator: (v) =>
+                    (v ?? '').trim().isEmpty ? 'Please enter the ${extra[0].toLowerCase()}' : null,
+                    onSaved: (v) {
+                      _req.extraLabel = extra[0];
+                      _req.extra = v!.trim();
+                    },
+                  ),
+                ),
+                CampusTextField(
+                  controller: _subject,
+                  label: 'Request subject *',
+                  hint: 'e.g. Wi-Fi not working in Block C',
+                  icon: Icons.title_rounded,
+                  caps: TextCapitalization.sentences,
+                  validator: _vSubject,
+                  onSaved: (v) => _req.subject = v!.trim(),
+                ),
+                CampusTextField(
+                  controller: _details,
+                  label: 'Request details *',
+                  hint: 'Describe the problem and when it started (20–300 characters)',
+                  icon: Icons.notes_rounded,
+                  keyboard: TextInputType.multiline,
+                  action: TextInputAction.newline,
+                  caps: TextCapitalization.sentences,
+                  maxLines: 6,
+                  maxLength: 300,
+                  validator: _vDetails,
+                  onSaved: (v) => _req.details = v!.trim(),
+                ),
+                ChoiceField(
+                  label: 'Urgency *',
+                  icon: Icons.flag_outlined,
+                  options: kUrgency,
+                  validator: (v) => v == null ? 'Choose an urgency level' : null,
+                  onSaved: (v) => _req.urgency = v ?? '',
+                ),
+              ]),
+
+              // ── Section 3: preferences ──
+              _section(p, 'Preferences', Icons.tune_rounded, [
+                ChoiceField(
+                  label: 'Preferred contact *',
+                  icon: Icons.forum_outlined,
+                  options: kContact,
+                  validator: (v) => v == null ? 'Choose how we should contact you' : null,
+                  onSaved: (v) => _req.contact = v ?? '',
+                ),
+                DateField(
+                  label: 'Preferred response date *',
+                  onSaved: (d) => _req.date = d,
+                ),
+              ]),
+
+              // ── Section 4: confirmation + actions ──
+              _section(p, 'Confirmation', Icons.verified_user_outlined, [
+                DeclarationField(
+                  text: 'I confirm that the information above is correct and I agree to be contacted '
+                      'by AVIT staff about this request.',
+                  onSaved: (_) {},
+                ),
+              ]),
+              Row(children: [
+                Expanded(
+                  flex: 3,
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: kPri,
+                      minimumSize: const Size.fromHeight(56),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                    onPressed: _submit,
+                    icon: const Icon(Icons.send_rounded),
+                    label: const Text('Submit request', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: p.text,
+                      side: BorderSide(color: p.line, width: 1.5),
+                      minimumSize: const Size.fromHeight(56),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                    onPressed: () => _reset(),
+                    icon: const Icon(Icons.restart_alt_rounded),
+                    label: const Text('Reset', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ]),
+            ]),
+          ),
+        ],
+      ),
+    );
   }
 }
